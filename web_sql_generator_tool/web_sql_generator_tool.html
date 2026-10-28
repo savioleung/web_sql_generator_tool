@@ -1,0 +1,1456 @@
+<!-- Chosen Palette: Modern Tech Neutral (Slate & Zinc with Indigo, Emerald, Amber, and Sky Accents) -->
+<!-- Application Structure Plan:
+1. ヘッダーエリア: タイトル、RDBMS切替（MySQL, PostgreSQL, SQLite, SQL Server）、サンプルプリセット読込。
+2. SQLインポートエリア (表A直上): 
+   - デフォルト最小化（折りたたみ）表示、展開/折りたたみトグルボタン。
+   - 高さ可変（resize-y）テキストエリア。
+   - パース実行ボタン（CREATE/DROP/TRUNCATE検出時の一新アラートダイアログ制御）。
+   - CREATE TABLE / INSERT / UPDATE / ALTER TABLE (ADD COLUMN) 構文パース対応。
+   - 構文エラー時のリアルタイム安全メッセージ表示（表A・B非破壊）。
+3. 表A（テーブル＆カラム定義エリア）: 
+   - 論理名・物理名入力。
+   - 動的カラムテーブル（順序、論理名、物理名、データ型選択、桁数/精度入力、PK、NOT NULL、Index、デフォルト値、備考）。
+4. 表B（サンプルデータ入力＆リアルタイム検証エリア）:
+   - 表A構造への動的追従。
+   - 🎲 モックデータ自動生成機能（データ型最優先の厳密データ生成）。
+   - リアルタイムバリデーションと視覚的エラーインジケーター・ツールチップ。
+5. 表C（検索条件 & SELECT文設定エリア）:
+   - 取得対象カラム指定（全選択 / 個別選択） & DISTINCT フラグ。
+   - 動的 WHERE 検索条件構築（AND/OR, カラム選択, 演算子[=, <>, >, LIKE, IN, IS NULL等], 検索値）。
+   - 動的 ORDER BY ソート指定（複数ソートキー, ASC/DESC）。
+   - LIMIT / OFFSET 件数制限（ダイアレクト構文対応）。
+6. SQL出力エリア:
+   - ダイヤレクト別の CREATE TABLE, CREATE INDEX, INSERT, UPDATE, SELECT文の動的整形出力。
+   - カテゴリ別タブ切替、クリップボードコピー、.sql ファイルダウンロード機能。
+-->
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web SQL Generator & Data Validation Tool</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & React DOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel Standalone -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Fonts -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap">
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        .font-mono-code {
+            font-family: 'Fira Code', monospace;
+        }
+        /* Custom scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen pb-12">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Data Types configuration
+        const BASE_DATA_TYPES = [
+            { name: 'VARCHAR', lengthSupported: true, defaultLength: '255' },
+            { name: 'CHAR', lengthSupported: true, defaultLength: '10' },
+            { name: 'TEXT', lengthSupported: false, defaultLength: '' },
+            { name: 'INT', lengthSupported: true, defaultLength: '' },
+            { name: 'BIGINT', lengthSupported: true, defaultLength: '' },
+            { name: 'SMALLINT', lengthSupported: true, defaultLength: '' },
+            { name: 'DECIMAL', lengthSupported: true, defaultLength: '10,2' },
+            { name: 'NUMERIC', lengthSupported: true, defaultLength: '10,2' },
+            { name: 'FLOAT', lengthSupported: true, defaultLength: '24' },
+            { name: 'DOUBLE', lengthSupported: true, defaultLength: '53' },
+            { name: 'DATE', lengthSupported: false, defaultLength: '' },
+            { name: 'DATETIME', lengthSupported: true, defaultLength: '' },
+            { name: 'TIMESTAMP', lengthSupported: true, defaultLength: '' },
+            { name: 'TIME', lengthSupported: true, defaultLength: '' },
+            { name: 'BOOLEAN', lengthSupported: false, defaultLength: '' },
+            { name: 'BINARY', lengthSupported: true, defaultLength: '16' },
+            { name: 'VARBINARY', lengthSupported: true, defaultLength: '255' }
+        ];
+
+        const OPERATORS = [
+            { value: '=', label: '= (一致)' },
+            { value: '!=', label: '!= (不一致)' },
+            { value: '>', label: '> (より大きい)' },
+            { value: '>=', label: '>= (以上)' },
+            { value: '<', label: '< (未満)' },
+            { value: '<=', label: '<= (以下)' },
+            { value: 'LIKE %...%', label: 'LIKE (部分一致)' },
+            { value: 'LIKE ...%', label: 'LIKE (前方一致)' },
+            { value: 'IN', label: 'IN (複数指定: a,b,c)' },
+            { value: 'IS NULL', label: 'IS NULL (空値)' },
+            { value: 'IS NOT NULL', label: 'IS NOT NULL (非空値)' }
+        ];
+
+        const PRESETS = {
+            users: {
+                logical: 'ユーザーマスタ',
+                physical: 'users',
+                columns: [
+                    { id: '1', logicalName: 'ユーザーID', physicalName: 'user_id', dataType: 'INT', lengthPrecision: '11', isPk: true, isAutoInc: true, isNotNull: true, isIndex: false, defaultValue: '', comment: '一意識別子' },
+                    { id: '2', logicalName: 'ユーザー名', physicalName: 'user_name', dataType: 'VARCHAR', lengthPrecision: '255', isPk: false, isAutoInc: false, isNotNull: true, isIndex: true, defaultValue: '', comment: '氏名' },
+                    { id: '3', logicalName: 'メールアドレス', physicalName: 'email', dataType: 'VARCHAR', lengthPrecision: '255', isPk: false, isAutoInc: false, isNotNull: true, isIndex: true, defaultValue: '', comment: '連絡用メール' },
+                    { id: '4', logicalName: '年齢', physicalName: 'age', dataType: 'INT', lengthPrecision: '3', isPk: false, isAutoInc: false, isNotNull: false, isIndex: false, defaultValue: '20', comment: '会員年齢' },
+                    { id: '5', logicalName: '利用可能フラグ', physicalName: 'is_active', dataType: 'BOOLEAN', lengthPrecision: '', isPk: false, isAutoInc: false, isNotNull: true, isIndex: false, defaultValue: 'true', comment: '有効/無効' },
+                    { id: '6', logicalName: '登録日時', physicalName: 'created_at', dataType: 'DATETIME', lengthPrecision: '6', isPk: false, isAutoInc: false, isNotNull: true, isIndex: false, defaultValue: 'CURRENT_TIMESTAMP', comment: '作成日' }
+                ],
+                rows: [
+                    { _rowId: 'r1', user_id: '1', user_name: '山田 太郎', email: 'yamada@example.com', age: '30', is_active: 'true', created_at: '2026-08-01 10:00:00' },
+                    { _rowId: 'r2', user_id: '2', user_name: '佐藤 花子', email: 'sato@example.com', age: '25', is_active: 'true', created_at: '2026-08-05 14:30:00' },
+                    { _rowId: 'r3', user_id: '3', user_name: '鈴木 一郎', email: 'suzuki@example.com', age: '42', is_active: 'false', created_at: '2026-08-12 09:15:00' }
+                ],
+                whereConditions: [
+                    { id: 'w1', combine: 'AND', column: 'age', operator: '>=', value: '20' },
+                    { id: 'w2', combine: 'AND', column: 'is_active', operator: '=', value: 'true' }
+                ],
+                orderByRules: [
+                    { id: 'o1', column: 'created_at', direction: 'DESC' }
+                ]
+            },
+            products: {
+                logical: '商品マスタ',
+                physical: 'products',
+                columns: [
+                    { id: 'p1', logicalName: '商品コード', physicalName: 'product_code', dataType: 'VARCHAR', lengthPrecision: '50', isPk: true, isAutoInc: false, isNotNull: true, isIndex: false, defaultValue: '', comment: 'SKU' },
+                    { id: 'p2', logicalName: '商品名', physicalName: 'product_name', dataType: 'VARCHAR', lengthPrecision: '255', isPk: false, isAutoInc: false, isNotNull: true, isIndex: true, defaultValue: '', comment: '品名' },
+                    { id: 'p3', logicalName: '単価', physicalName: 'price', dataType: 'DECIMAL', lengthPrecision: '10,2', isPk: false, isAutoInc: false, isNotNull: true, isIndex: false, defaultValue: '0.00', comment: '販売価格' },
+                    { id: 'p4', logicalName: '在庫数', physicalName: 'stock', dataType: 'INT', lengthPrecision: '8', isPk: false, isAutoInc: false, isNotNull: true, isIndex: false, defaultValue: '0', comment: '現在庫' },
+                    { id: 'p5', logicalName: '発売日', physicalName: 'release_date', dataType: 'DATE', lengthPrecision: '', isPk: false, isAutoInc: false, isNotNull: false, isIndex: false, defaultValue: '', comment: '' }
+                ],
+                rows: [
+                    { _rowId: 'pr1', product_code: 'PRD-001', product_name: 'ワイヤレスイヤホン', price: '12800.00', stock: '50', release_date: '2026-09-01' },
+                    { _rowId: 'pr2', product_code: 'PRD-002', product_name: 'エルゴノミクスキーボード', price: '24500.50', stock: '15', release_date: '2026-09-10' }
+                ],
+                whereConditions: [
+                    { id: 'pw1', combine: 'AND', column: 'price', operator: '>=', value: '10000' }
+                ],
+                orderByRules: [
+                    { id: 'po1', column: 'price', direction: 'ASC' }
+                ]
+            }
+        };
+
+        function isLengthSupported(dataType) {
+            if (!dataType) return false;
+            const dt = BASE_DATA_TYPES.find(t => t.name.toUpperCase() === dataType.toUpperCase());
+            return dt ? dt.lengthSupported : true;
+        }
+
+        function getFormattedDataType(col) {
+            const type = (col.dataType || 'VARCHAR').toUpperCase();
+            if (isLengthSupported(type) && col.lengthPrecision && col.lengthPrecision.trim() !== '') {
+                return `${type}(${col.lengthPrecision.trim()})`;
+            }
+            return type;
+        }
+
+        function validateCell(col, value, rows, currentRowId) {
+            const val = value !== undefined && value !== null ? String(value).trim() : '';
+
+            if ((col.isNotNull || col.isPk) && val === '') {
+                return `${col.physicalName || 'カラム'} は必須項目です。`;
+            }
+            if (val === '') return null;
+
+            const typeUpper = (col.dataType || '').toUpperCase();
+            if (['INT', 'BIGINT', 'SMALLINT'].includes(typeUpper)) {
+                if (!/^-?\d+$/.test(val)) return `${col.physicalName} には有効な整数を入力してください。`;
+            }
+            if (['DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE'].includes(typeUpper)) {
+                if (!/^-?\d+(\.\d+)?$/.test(val)) return `${col.physicalName} には有効な数値(小数可)を入力してください。`;
+            }
+            if (typeUpper === 'DATE') {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(val) || isNaN(Date.parse(val))) return `${col.physicalName} は YYYY-MM-DD 形式の日付で入力してください。`;
+            }
+            if (typeUpper === 'DATETIME' || typeUpper === 'TIMESTAMP') {
+                const dtRegex = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/;
+                if (!dtRegex.test(val) && val.toUpperCase() !== 'CURRENT_TIMESTAMP') return `${col.physicalName} は YYYY-MM-DD HH:mm:ss 形式で入力してください。`;
+            }
+            if (typeUpper === 'BOOLEAN') {
+                const boolVals = ['true', 'false', '0', '1', 't', 'f'];
+                if (!boolVals.includes(val.toLowerCase())) return `${col.physicalName} は true, false, 1, 0 のいずれかで入力してください。`;
+            }
+            if (col.isPk) {
+                const duplicateRow = rows.find(r => r._rowId !== currentRowId && String(r[col.physicalName] || '').trim() === val);
+                if (duplicateRow) return `主キー ${col.physicalName} の値 '${val}' が重複しています。`;
+            }
+
+            return null;
+        }
+
+        function generateMockRow(columns, rowIndex, startPkOffset = 1) {
+            const row = { _rowId: 'mock_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7) };
+            const familyNames = ['山田', '佐藤', '鈴木', '高橋', '田中'];
+            const givenNames = ['太郎', '花子', '一郎', '美咲', '健太'];
+            const getRandomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
+            const getRandomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+            columns.forEach(col => {
+                if (!col.physicalName) return;
+                const phys = col.physicalName.toLowerCase();
+                const type = (col.dataType || 'VARCHAR').toUpperCase();
+
+                if (col.isPk) {
+                    row[col.physicalName] = String(startPkOffset + rowIndex);
+                    return;
+                }
+                if (['INT', 'BIGINT', 'SMALLINT'].includes(type)) {
+                    row[col.physicalName] = String(getRandomInt(18, 65));
+                    return;
+                }
+                if (['DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE'].includes(type)) {
+                    row[col.physicalName] = `${getRandomInt(10, 500) * 100}.00`;
+                    return;
+                }
+                if (type === 'DATE') {
+                    row[col.physicalName] = `2026-09-${String(getRandomInt(1, 28)).padStart(2, '0')}`;
+                    return;
+                }
+                if (type === 'DATETIME' || type === 'TIMESTAMP') {
+                    row[col.physicalName] = `2026-09-15 12:00:00`;
+                    return;
+                }
+                if (type === 'BOOLEAN') {
+                    row[col.physicalName] = 'true';
+                    return;
+                }
+                if (phys.includes('email')) {
+                    row[col.physicalName] = `user${rowIndex + 1}@example.com`;
+                } else if (phys.includes('name')) {
+                    row[col.physicalName] = `${getRandomItem(familyNames)} ${getRandomItem(givenNames)}`;
+                } else {
+                    row[col.physicalName] = `${col.physicalName}_val`;
+                }
+            });
+
+            return row;
+        }
+
+        // SQL Parser Logic (Client-Side)
+        function parseSqlScript(rawSql, existingColumns = [], existingRows = []) {
+            const cleanSql = rawSql.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').trim();
+            if (!cleanSql) {
+                throw new Error('SQL文が空です。SQLテキストを入力してください。');
+            }
+
+            let parsedTablePhysical = null;
+            let parsedColumns = [...existingColumns];
+            let addedColumns = [];
+            let parsedRows = [];
+            let updateAssignmentsList = [];
+            let isCreateTable = false;
+
+            // Helper to get list of column names in lowercase
+            const getColNameList = (cols) => cols.map(c => (c.physicalName || '').toLowerCase());
+
+            // 1. Detect CREATE TABLE
+            const createMatch = cleanSql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`\[]?(\w+)["`\]]?\s*\(([\s\S]+)\)/i);
+            if (createMatch) {
+                isCreateTable = true;
+                parsedTablePhysical = createMatch[1];
+                parsedColumns = []; // Reset columns for CREATE TABLE
+                const body = createMatch[2];
+                
+                const lines = [];
+                let depth = 0;
+                let current = '';
+                for (let i = 0; i < body.length; i++) {
+                    const char = body[i];
+                    if (char === '(') depth++;
+                    else if (char === ')') depth--;
+                    
+                    if (char === ',' && depth === 0) {
+                        lines.push(current.trim());
+                        current = '';
+                    } else {
+                        current += char;
+                    }
+                }
+                if (current.trim()) lines.push(current.trim());
+
+                let pkColsFromConstraint = [];
+
+                lines.forEach((line, idx) => {
+                    const trimmed = line.trim();
+                    if (!trimmed) return;
+
+                    const pkConstraintMatch = trimmed.match(/^PRIMARY\s+KEY\s*\(([^)]+)\)/i);
+                    if (pkConstraintMatch) {
+                        pkColsFromConstraint = pkConstraintMatch[1].split(',').map(s => s.replace(/["`\[\]\s]/g, ''));
+                        return;
+                    }
+
+                    if (/^(CONSTRAINT|FOREIGN\s+KEY|KEY|INDEX|UNIQUE)/i.test(trimmed)) return;
+
+                    const colMatch = trimmed.match(/^["`\[]?(\w+)["`\]]?\s+([A-Za-z0-9_]+)(?:\(([^)]+)\))?\s*(.*)$/i);
+                    if (colMatch) {
+                        const colPhys = colMatch[1];
+                        const colType = colMatch[2].toUpperCase();
+                        const lenPrec = colMatch[3] || '';
+                        const rest = colMatch[4] || '';
+
+                        const isPk = /PRIMARY\s+KEY/i.test(rest);
+                        const isAutoInc = /AUTO_INCREMENT|SERIAL|IDENTITY|AUTOINCREMENT/i.test(rest) || ['SERIAL', 'BIGSERIAL'].includes(colType);
+                        const isNotNull = isPk || /NOT\s+NULL/i.test(rest);
+                        
+                        let defaultValue = '';
+                        const defaultMatch = rest.match(/DEFAULT\s+('([^']*)'|([^\s]+))/i);
+                        if (defaultMatch) {
+                            defaultValue = defaultMatch[2] !== undefined ? defaultMatch[2] : defaultMatch[3];
+                        }
+
+                        let comment = '';
+                        const commentMatch = rest.match(/COMMENT\s+'([^']*)'/i);
+                        if (commentMatch) comment = commentMatch[1];
+
+                        parsedColumns.push({
+                            id: 'imp_' + Date.now() + '_' + idx,
+                            logicalName: comment || colPhys,
+                            physicalName: colPhys,
+                            dataType: ['SERIAL', 'BIGSERIAL'].includes(colType) ? (colType === 'SERIAL' ? 'INT' : 'BIGINT') : colType,
+                            lengthPrecision: lenPrec,
+                            isPk: isPk,
+                            isAutoInc: isAutoInc,
+                            isNotNull: isNotNull,
+                            isIndex: false,
+                            defaultValue: defaultValue,
+                            comment: comment
+                        });
+                    }
+                });
+
+                if (pkColsFromConstraint.length > 0) {
+                    parsedColumns = parsedColumns.map(c => ({
+                        ...c,
+                        isPk: c.isPk || pkColsFromConstraint.includes(c.physicalName),
+                        isNotNull: c.isNotNull || pkColsFromConstraint.includes(c.physicalName)
+                    }));
+                }
+            }
+
+            // 2. Detect ALTER TABLE ADD [COLUMN]
+            const alterRegex = /ALTER\s+TABLE\s+["`\[]?(\w+)["`\]]?\s+ADD\s+(?:COLUMN\s+)?["`\[]?(\w+)["`\]]?\s+([A-Za-z0-9_]+)(?:\(([^)]+)\))?\s*(.*)$/gim;
+            let alterMatch;
+            while ((alterMatch = alterRegex.exec(cleanSql)) !== null) {
+                const targetTable = alterMatch[1];
+                if (!parsedTablePhysical) parsedTablePhysical = targetTable;
+
+                const colPhys = alterMatch[2];
+                const colType = alterMatch[3].toUpperCase();
+                const lenPrec = alterMatch[4] || '';
+                const rest = alterMatch[5] || '';
+
+                const isPk = /PRIMARY\s+KEY/i.test(rest);
+                const isAutoInc = /AUTO_INCREMENT|SERIAL|IDENTITY|AUTOINCREMENT/i.test(rest);
+                const isNotNull = isPk || /NOT\s+NULL/i.test(rest);
+
+                let defaultValue = '';
+                const defaultMatch = rest.match(/DEFAULT\s+('([^']*)'|([^\s]+))/i);
+                if (defaultMatch) defaultValue = defaultMatch[2] !== undefined ? defaultMatch[2] : defaultMatch[3];
+
+                let comment = '';
+                const commentMatch = rest.match(/COMMENT\s+'([^']*)'/i);
+                if (commentMatch) comment = commentMatch[1];
+
+                if (!parsedColumns.some(c => c.physicalName === colPhys)) {
+                    const newColObj = {
+                        id: 'alter_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+                        logicalName: comment || colPhys,
+                        physicalName: colPhys,
+                        dataType: colType,
+                        lengthPrecision: lenPrec,
+                        isPk: isPk,
+                        isAutoInc: isAutoInc,
+                        isNotNull: isNotNull,
+                        isIndex: false,
+                        defaultValue: defaultValue,
+                        comment: comment
+                    };
+                    parsedColumns.push(newColObj);
+                    addedColumns.push(newColObj);
+                }
+            }
+
+            // Check column existence for INSERT / UPDATE
+            const activeColNamesLower = getColNameList(parsedColumns);
+
+            // 3. Detect INSERT INTO
+            const insertRegex = /INSERT\s+INTO\s+["`\[]?(\w+)["`\]]?\s*(?:\(([^)]+)\))?\s*VALUES\s*([\s\S]+?);?$/gi;
+            let insertMatch;
+
+            while ((insertMatch = insertRegex.exec(cleanSql)) !== null) {
+                const targetTable = insertMatch[1];
+                if (!parsedTablePhysical) parsedTablePhysical = targetTable;
+
+                const colListStr = insertMatch[2];
+                const valuesBody = insertMatch[3];
+
+                let targetColNames = [];
+                if (colListStr) {
+                    targetColNames = colListStr.split(',').map(s => s.replace(/["`\[\]\s]/g, ''));
+                    // Check if specified columns exist in Table A
+                    for (const cName of targetColNames) {
+                        if (!activeColNamesLower.includes(cName.toLowerCase())) {
+                            throw new Error(`INSERT文に含まれるカラム [${cName}] は表A（定義）に存在しません。定義を追加してから再度インポートしてください。`);
+                        }
+                    }
+                } else if (parsedColumns.length > 0) {
+                    targetColNames = parsedColumns.map(c => c.physicalName);
+                }
+
+                const tupleMatches = valuesBody.match(/\(([^)]+)\)/g);
+                if (tupleMatches) {
+                    tupleMatches.forEach((tuple) => {
+                        const rawVals = tuple.substring(1, tuple.length - 1).split(',');
+                        const newRow = { _rowId: 'imp_row_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6) };
+
+                        rawVals.forEach((v, cIdx) => {
+                            const cleanVal = v.trim().replace(/^'|'$/g, '');
+                            const colName = targetColNames[cIdx] || (parsedColumns[cIdx] ? parsedColumns[cIdx].physicalName : null);
+                            if (colName) {
+                                newRow[colName] = cleanVal === 'NULL' ? '' : cleanVal;
+                            }
+                        });
+
+                        // Fill missing Auto Inc columns if not present in INSERT
+                        parsedColumns.forEach(c => {
+                            if (c.isAutoInc && (newRow[c.physicalName] === undefined || newRow[c.physicalName] === '')) {
+                                newRow[c.physicalName] = String(existingRows.length + parsedRows.length + 1);
+                            }
+                        });
+
+                        parsedRows.push(newRow);
+                    });
+                }
+            }
+
+            // 4. Detect UPDATE statements
+            const updateRegex = /UPDATE\s+["`\[]?(\w+)["`\]]?\s+SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?;?$/gi;
+            let updateMatch;
+            while ((updateMatch = updateRegex.exec(cleanSql)) !== null) {
+                const targetTable = updateMatch[1];
+                if (!parsedTablePhysical) parsedTablePhysical = targetTable;
+
+                const setBody = updateMatch[2];
+                const whereBody = updateMatch[3] || '';
+
+                const sets = {};
+                setBody.split(',').forEach(pair => {
+                    const eqIdx = pair.indexOf('=');
+                    if (eqIdx !== -1) {
+                        const colKey = pair.substring(0, eqIdx).replace(/["`\[\]\s]/g, '');
+                        if (!activeColNamesLower.includes(colKey.toLowerCase())) {
+                            throw new Error(`UPDATE文のSETに含まれるカラム [${colKey}] は表A（定義）に存在しません。`);
+                        }
+                        const valRaw = pair.substring(eqIdx + 1).trim().replace(/^'|'$/g, '');
+                        sets[colKey] = valRaw === 'NULL' ? '' : valRaw;
+                    }
+                });
+
+                const wheres = {};
+                if (whereBody) {
+                    whereBody.split(/\s+AND\s+/i).forEach(pair => {
+                        const eqIdx = pair.indexOf('=');
+                        if (eqIdx !== -1) {
+                            const colKey = pair.substring(0, eqIdx).replace(/["`\[\]\s]/g, '');
+                            if (!activeColNamesLower.includes(colKey.toLowerCase())) {
+                                throw new Error(`UPDATE文のWHEREに含まれるカラム [${colKey}] は表A（定義）に存在しません。`);
+                            }
+                            const valRaw = pair.substring(eqIdx + 1).trim().replace(/^'|'$/g, '');
+                            wheres[colKey] = valRaw;
+                        }
+                    });
+                }
+
+                updateAssignmentsList.push({ sets, wheres });
+            }
+
+            if (!parsedTablePhysical && parsedColumns.length === existingColumns.length && parsedRows.length === 0 && updateAssignmentsList.length === 0 && addedColumns.length === 0) {
+                throw new Error('解析可能な SQL (CREATE TABLE, ALTER TABLE, INSERT, UPDATE) を検出できませんでした。');
+            }
+
+            return {
+                tableNamePhysical: parsedTablePhysical,
+                columns: parsedColumns,
+                insertedRows: parsedRows,
+                updateAssignments: updateAssignmentsList,
+                isCreateTable: isCreateTable,
+                addedColumnsCount: addedColumns.length
+            };
+        }
+
+        // SQL Generator Logic including SELECT (Table C)
+        function generateSQLStatements(dialect, tableNameLogical, tableNamePhysical, columns, rows, selectConfig, activeTab) {
+            const table = tableNamePhysical.trim() || 'table_name';
+            const logical = tableNameLogical.trim() || '';
+
+            let quote = '`';
+            if (dialect === 'postgresql' || dialect === 'sqlite' || dialect === 'sqlserver') {
+                quote = '"';
+            }
+            const q = (identifier) => `${quote}${identifier}${quote}`;
+
+            // Helper for Auto Inc Dialect Representation
+            const getAutoIncString = (dial, col) => {
+                if (!col.isAutoInc) return '';
+                if (dial === 'mysql') return ' AUTO_INCREMENT';
+                if (dial === 'sqlite') return ' AUTOINCREMENT';
+                if (dial === 'sqlserver') return ' IDENTITY(1,1)';
+                return ''; // PostgreSQL handled in type
+            };
+
+            // 1. CREATE TABLE
+            let createSql = `-- Table: ${table} ${logical ? '(' + logical + ')' : ''}\nCREATE TABLE ${q(table)} (\n`;
+            if (columns.length === 0) {
+                createSql += `    -- (カラムが定義されていません)\n);`;
+            } else {
+                const columnLines = columns.map(col => {
+                    let fullType = getFormattedDataType(col);
+                    if (dialect === 'postgresql' && col.isAutoInc) {
+                        fullType = fullType.startsWith('BIGINT') ? 'BIGSERIAL' : 'SERIAL';
+                    }
+                    let line = `    ${q(col.physicalName)} ${fullType}${getAutoIncString(dialect, col)}`;
+                    if (col.isNotNull || col.isPk) line += ` NOT NULL`;
+                    if (col.defaultValue && col.defaultValue.trim() !== '') {
+                        const def = col.defaultValue.trim();
+                        line += (def.toUpperCase() === 'CURRENT_TIMESTAMP' || !isNaN(Number(def))) ? ` DEFAULT ${def}` : ` DEFAULT '${def}'`;
+                    }
+                    if (col.comment && col.comment.trim() && dialect === 'mysql') line += ` COMMENT '${col.comment.replace(/'/g, "''")}'`;
+                    return line;
+                });
+                const pkCols = columns.filter(c => c.isPk).map(c => q(c.physicalName));
+                if (pkCols.length > 0) columnLines.push(`    PRIMARY KEY (${pkCols.join(', ')})`);
+                createSql += columnLines.join(',\n') + `\n);`;
+            }
+
+            // 2. CREATE INDEX
+            let indexSql = `-- Indexes for ${table}\n`;
+            const indexCols = columns.filter(c => c.isIndex && !c.isPk);
+            if (indexCols.length === 0) {
+                indexSql += `-- (インデックス対象カラムなし)\n`;
+            } else {
+                indexCols.forEach(col => {
+                    indexSql += `CREATE INDEX ${q('idx_' + table + '_' + col.physicalName)} ON ${q(table)} (${q(col.physicalName)});\n`;
+                });
+            }
+
+            // 3. INSERT
+            let insertSql = `-- INSERT Data for ${table}\n`;
+            if (rows.length === 0 || columns.length === 0) {
+                insertSql += `-- (挿入データなし)\n`;
+            } else {
+                const validCols = columns.filter(c => c.physicalName && c.physicalName.trim() !== '');
+                const colNames = validCols.map(c => q(c.physicalName)).join(', ');
+
+                rows.forEach((row, rIdx) => {
+                    const values = validCols.map(col => {
+                        let val = row[col.physicalName];
+                        // Auto Inc fallback when value is empty
+                        if ((val === undefined || val === null || String(val).trim() === '') && col.isAutoInc) {
+                            val = String(rIdx + 1);
+                        }
+                        if (val === undefined || val === null || String(val).trim() === '') return 'NULL';
+                        const strVal = String(val).trim();
+                        const typeUpper = (col.dataType || '').toUpperCase();
+                        if (['INT', 'BIGINT', 'SMALLINT', 'DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE'].includes(typeUpper) && !isNaN(Number(strVal))) return strVal;
+                        if (typeUpper === 'BOOLEAN') return ['true', '1'].includes(strVal.toLowerCase()) ? (dialect === 'postgresql' ? 'TRUE' : '1') : (dialect === 'postgresql' ? 'FALSE' : '0');
+                        return `'${strVal.replace(/'/g, "''")}'`;
+                    });
+                    insertSql += `INSERT INTO ${q(table)} (${colNames}) VALUES (${values.join(', ')});\n`;
+                });
+            }
+
+            // 4. UPDATE
+            let updateSql = `-- UPDATE Data for ${table}\n`;
+            const pkColsObj = columns.filter(c => c.isPk);
+            const nonPkColsObj = columns.filter(c => !c.isPk && c.physicalName && c.physicalName.trim() !== '');
+            if (rows.length === 0 || pkColsObj.length === 0 || nonPkColsObj.length === 0) {
+                updateSql += `-- (更新データまたは主キーが設定されていません)\n`;
+            } else {
+                rows.forEach(row => {
+                    const setClauses = nonPkColsObj.map(col => {
+                        const val = row[col.physicalName];
+                        if (val === undefined || val === null || String(val).trim() === '') return `${q(col.physicalName)} = NULL`;
+                        const strVal = String(val).trim();
+                        return `${q(col.physicalName)} = '${strVal.replace(/'/g, "''")}'`;
+                    });
+                    const whereClauses = pkColsObj.map(col => `${q(col.physicalName)} = '${String(row[col.physicalName] || '').replace(/'/g, "''")}'`);
+                    updateSql += `UPDATE ${q(table)} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')};\n`;
+                });
+            }
+
+            // 5. SELECT (Table C Generator)
+            let selectSql = `-- SELECT Query for ${table} (表C設定に基づく生成)\n`;
+            let colsText = selectConfig.selectedColumns.length > 0
+                ? selectConfig.selectedColumns.map(c => q(c)).join(', ')
+                : '*';
+            
+            let queryStr = `SELECT ${selectConfig.isDistinct ? 'DISTINCT ' : ''}`;
+            if (dialect === 'sqlserver' && selectConfig.limit && !selectConfig.offset) {
+                queryStr += `TOP ${selectConfig.limit} `;
+            }
+            queryStr += `${colsText}\nFROM ${q(table)}`;
+
+            // WHERE Clauses
+            const activeWhere = selectConfig.whereConditions.filter(w => w.column && w.operator);
+            if (activeWhere.length > 0) {
+                const whereLines = activeWhere.map((cond, idx) => {
+                    const colName = q(cond.column);
+                    const prefix = idx === 0 ? '' : `${cond.combine} `;
+                    
+                    if (cond.operator === 'IS NULL' || cond.operator === 'IS NOT NULL') {
+                        return `${prefix}${colName} ${cond.operator}`;
+                    }
+                    if (cond.operator === 'LIKE %...%') {
+                        return `${prefix}${colName} LIKE '%${cond.value}%'`;
+                    }
+                    if (cond.operator === 'LIKE ...%') {
+                        return `${prefix}${colName} LIKE '${cond.value}%'`;
+                    }
+                    if (cond.operator === 'IN') {
+                        const vals = (cond.value || '').split(',').map(v => `'${v.trim()}'`).join(', ');
+                        return `${prefix}${colName} IN (${vals})`;
+                    }
+                    const val = isNaN(cond.value) || cond.value === '' ? `'${cond.value}'` : cond.value;
+                    return `${prefix}${colName} ${cond.operator} ${val}`;
+                });
+                queryStr += `\nWHERE ${whereLines.join('\n  ')}`;
+            }
+
+            // ORDER BY Clauses
+            const activeOrder = selectConfig.orderByRules.filter(o => o.column);
+            if (activeOrder.length > 0) {
+                const orderLines = activeOrder.map(o => `${q(o.column)} ${o.direction}`);
+                queryStr += `\nORDER BY ${orderLines.join(', ')}`;
+            }
+
+            // LIMIT / OFFSET
+            if (dialect !== 'sqlserver') {
+                if (selectConfig.limit) queryStr += `\nLIMIT ${selectConfig.limit}`;
+                if (selectConfig.offset) queryStr += ` OFFSET ${selectConfig.offset}`;
+            } else if (selectConfig.offset) {
+                queryStr += `\nOFFSET ${selectConfig.offset} ROWS`;
+                if (selectConfig.limit) queryStr += ` FETCH NEXT ${selectConfig.limit} ROWS ONLY`;
+            }
+
+            selectSql += queryStr + ';';
+
+            if (activeTab === 'create') return createSql;
+            if (activeTab === 'index') return indexSql;
+            if (activeTab === 'insert') return insertSql;
+            if (activeTab === 'update') return updateSql;
+            if (activeTab === 'select') return selectSql;
+
+            return `${createSql}\n\n${indexSql}\n\n${insertSql}\n\n${updateSql}\n\n${selectSql}`;
+        }
+
+        // --- Main React App ---
+        function App() {
+            const [dialect, setDialect] = React.useState('mysql');
+            const [tableNameLogical, setTableNameLogical] = React.useState(PRESETS.users.logical);
+            const [tableNamePhysical, setTableNamePhysical] = React.useState(PRESETS.users.physical);
+            const [columns, setColumns] = React.useState(PRESETS.users.columns);
+            const [rows, setRows] = React.useState(PRESETS.users.rows);
+
+            // SQL Import Box State
+            const [rawImportSql, setRawImportSql] = React.useState('');
+            const [isImportExpanded, setIsImportExpanded] = React.useState(false);
+            const [importError, setImportError] = React.useState('');
+
+            // Table C State
+            const [selectConfig, setSelectConfig] = React.useState({
+                isDistinct: false,
+                selectedColumns: [],
+                whereConditions: PRESETS.users.whereConditions,
+                orderByRules: PRESETS.users.orderByRules,
+                limit: '50',
+                offset: ''
+            });
+
+            const [activeTab, setActiveTab] = React.useState('all');
+            const [toast, setToast] = React.useState(null);
+
+            const showToast = (message, type = 'success') => {
+                setToast({ message, type });
+                setTimeout(() => setToast(null), 3500);
+            };
+
+            const loadPreset = (key) => {
+                const p = PRESETS[key];
+                if (!p) return;
+                setTableNameLogical(p.logical);
+                setTableNamePhysical(p.physical);
+                setColumns(p.columns);
+                setRows(p.rows);
+                setSelectConfig({
+                    isDistinct: false,
+                    selectedColumns: [],
+                    whereConditions: p.whereConditions || [],
+                    orderByRules: p.orderByRules || [],
+                    limit: '50',
+                    offset: ''
+                });
+                showToast(`プリセット「${p.logical}」を読み込みました`);
+            };
+
+            const handleImportSql = () => {
+                setImportError('');
+                if (!rawImportSql.trim()) {
+                    setImportError('SQL文を入力してください。');
+                    return;
+                }
+
+                const isResetting = /CREATE\s+TABLE|DROP\s+TABLE|TRUNCATE\s+TABLE/i.test(rawImportSql);
+                if (isResetting) {
+                    const confirmed = window.confirm('【確認】`CREATE TABLE` などの構文が検出されたため、現在の表A・表Bのデータが全置き換えされます。実行しますか？');
+                    if (!confirmed) return;
+                }
+
+                try {
+                    const parsed = parseSqlScript(rawImportSql, columns, rows);
+
+                    if (parsed.tableNamePhysical) {
+                        setTableNamePhysical(parsed.tableNamePhysical);
+                    }
+
+                    if (parsed.isCreateTable || parsed.addedColumnsCount > 0) {
+                        setColumns(parsed.columns);
+                    }
+
+                    let updatedRows = parsed.isCreateTable ? [] : [...rows];
+
+                    if (parsed.insertedRows && parsed.insertedRows.length > 0) {
+                        updatedRows = [...updatedRows, ...parsed.insertedRows];
+                    }
+
+                    if (parsed.updateAssignments && parsed.updateAssignments.length > 0) {
+                        parsed.updateAssignments.forEach(upd => {
+                            let matched = false;
+                            updatedRows = updatedRows.map(r => {
+                                const isMatch = Object.keys(upd.wheres).length > 0 && Object.keys(upd.wheres).every(wCol => String(r[wCol] || '').trim() === String(upd.wheres[wCol]).trim());
+                                if (isMatch) {
+                                    matched = true;
+                                    return { ...r, ...upd.sets };
+                                }
+                                return r;
+                            });
+
+                            if (!matched) {
+                                const newRowFromUpdate = {
+                                    _rowId: 'upd_row_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+                                    ...upd.wheres,
+                                    ...upd.sets
+                                };
+                                updatedRows.push(newRowFromUpdate);
+                            }
+                        });
+                    }
+
+                    setRows(updatedRows);
+
+                    const messages = [];
+                    if (parsed.isCreateTable) messages.push('CREATE TABLE構文を適用');
+                    if (parsed.addedColumnsCount > 0) messages.push(`${parsed.addedColumnsCount} 件のカラムを追加`);
+                    if (parsed.insertedRows.length > 0) messages.push(`${parsed.insertedRows.length} 件のデータ行を追加`);
+                    if (parsed.updateAssignments.length > 0) messages.push(`${parsed.updateAssignments.length} 件のUPDATE文を適用`);
+
+                    showToast(`インポート成功: ${messages.join(' / ') || '処理完了'}`);
+                } catch (err) {
+                    setImportError(err.message || 'SQLの構文解析に失敗しました。');
+                }
+            };
+
+            // Table A Actions
+            const addColumn = () => {
+                const idx = columns.length + 1;
+                const newCol = {
+                    id: String(Date.now()),
+                    logicalName: `項目_${idx}`,
+                    physicalName: `col_${idx}`,
+                    dataType: 'VARCHAR',
+                    lengthPrecision: '255',
+                    isPk: false,
+                    isAutoInc: false,
+                    isNotNull: false,
+                    isIndex: false,
+                    defaultValue: '',
+                    comment: ''
+                };
+                setColumns([...columns, newCol]);
+            };
+
+            const removeColumn = (id) => {
+                const targetCol = columns.find(c => c.id === id);
+                setColumns(columns.filter(c => c.id !== id));
+                if (targetCol && targetCol.physicalName) {
+                    setRows(rows.map(r => {
+                        const updated = { ...r };
+                        delete updated[targetCol.physicalName];
+                        return updated;
+                    }));
+                }
+            };
+
+            const updateColumn = (id, field, value) => {
+                setColumns(columns.map(col => {
+                    if (col.id !== id) return col;
+                    const updated = { ...col, [field]: value };
+                    if (field === 'dataType') {
+                        const dtObj = BASE_DATA_TYPES.find(t => t.name.toUpperCase() === value.toUpperCase());
+                        if (dtObj && dtObj.lengthSupported && !updated.lengthPrecision) {
+                            updated.lengthPrecision = dtObj.defaultLength;
+                        } else if (dtObj && !dtObj.lengthSupported) {
+                            updated.lengthPrecision = '';
+                        }
+                    }
+                    if (field === 'isPk' && value === true) updated.isNotNull = true;
+                    if (field === 'isAutoInc' && value === true) {
+                        updated.isPk = true;
+                        updated.isNotNull = true;
+                    }
+                    return updated;
+                }));
+            };
+
+            // Table B Actions
+            const addRow = () => {
+                const newRow = { _rowId: 'r_' + Date.now() };
+                columns.forEach(col => {
+                    if (col.physicalName) {
+                        if (col.isAutoInc) {
+                            newRow[col.physicalName] = String(rows.length + 1);
+                        } else {
+                            newRow[col.physicalName] = col.defaultValue || '';
+                        }
+                    }
+                });
+                setRows([...rows, newRow]);
+            };
+
+            const removeRow = (rowId) => setRows(rows.filter(r => r._rowId !== rowId));
+            const updateCell = (rowId, physicalName, value) => {
+                setRows(rows.map(r => r._rowId === rowId ? { ...r, [physicalName]: value } : r));
+            };
+
+            const generateMockData = () => {
+                if (columns.length === 0) return showToast('カラムを1つ以上定義してください', 'error');
+                const mockRows = [];
+                for (let i = 0; i < 5; i++) mockRows.push(generateMockRow(columns, i, 1));
+                setRows(mockRows);
+                showToast('モックデータを5件生成しました✨');
+            };
+
+            // Table C Actions
+            const toggleSelectColumn = (physName) => {
+                setSelectConfig(prev => {
+                    const exists = prev.selectedColumns.includes(physName);
+                    const updated = exists 
+                        ? prev.selectedColumns.filter(c => c !== physName)
+                        : [...prev.selectedColumns, physName];
+                    return { ...prev, selectedColumns: updated };
+                });
+            };
+
+            const addWhereCondition = () => {
+                const firstCol = columns[0]?.physicalName || '';
+                setSelectConfig(prev => ({
+                    ...prev,
+                    whereConditions: [
+                        ...prev.whereConditions,
+                        { id: 'w_' + Date.now(), combine: 'AND', column: firstCol, operator: '=', value: '' }
+                    ]
+                }));
+            };
+
+            const removeWhereCondition = (id) => {
+                setSelectConfig(prev => ({
+                    ...prev,
+                    whereConditions: prev.whereConditions.filter(w => w.id !== id)
+                }));
+            };
+
+            const updateWhereCondition = (id, field, value) => {
+                setSelectConfig(prev => ({
+                    ...prev,
+                    whereConditions: prev.whereConditions.map(w => w.id === id ? { ...w, [field]: value } : w)
+                }));
+            };
+
+            const addOrderByRule = () => {
+                const firstCol = columns[0]?.physicalName || '';
+                setSelectConfig(prev => ({
+                    ...prev,
+                    orderByRules: [
+                        ...prev.orderByRules,
+                        { id: 'o_' + Date.now(), column: firstCol, direction: 'ASC' }
+                    ]
+                }));
+            };
+
+            const removeOrderByRule = (id) => {
+                setSelectConfig(prev => ({
+                    ...prev,
+                    orderByRules: prev.orderByRules.filter(o => o.id !== id)
+                }));
+            };
+
+            const updateOrderByRule = (id, field, value) => {
+                setSelectConfig(prev => ({
+                    ...prev,
+                    orderByRules: prev.orderByRules.map(o => o.id === id ? { ...o, [field]: value } : o)
+                }));
+            };
+
+            // Validation Calculations
+            const validationResult = React.useMemo(() => {
+                const errorsMap = {};
+                let count = 0;
+                rows.forEach(r => {
+                    columns.forEach(col => {
+                        if (!col.physicalName) return;
+                        const errMsg = validateCell(col, r[col.physicalName], rows, r._rowId);
+                        if (errMsg) {
+                            errorsMap[`${r._rowId}_${col.physicalName}`] = errMsg;
+                            count++;
+                        }
+                    });
+                });
+                return { errorsMap, count };
+            }, [columns, rows]);
+
+            // Generated SQL text
+            const generatedSQL = React.useMemo(() => {
+                return generateSQLStatements(dialect, tableNameLogical, tableNamePhysical, columns, rows, selectConfig, activeTab);
+            }, [dialect, tableNameLogical, tableNamePhysical, columns, rows, selectConfig, activeTab]);
+
+            const handleCopy = () => {
+                navigator.clipboard.writeText(generatedSQL).then(() => showToast('SQLをコピーしました！'));
+            };
+
+            const handleDownload = () => {
+                const filename = `${tableNamePhysical || 'schema'}.sql`;
+                const blob = new Blob([generatedSQL], { type: 'text/plain;charset=utf-8' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = filename;
+                link.click();
+                URL.revokeObjectURL(link.href);
+                showToast(`ファイル [${filename}] を保存しました`);
+            };
+
+            return (
+                <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 space-y-6">
+                    {/* Header */}
+                    <header className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        <div className="flex items-center space-x-3">
+                            <div className="bg-indigo-600 text-white p-2.5 rounded-xl font-bold font-mono-code text-lg shadow-sm">
+                                SQL
+                            </div>
+                            <div>
+                                <h1 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+                                    Web SQL Generator & Data Validator
+                                </h1>
+                                <p className="text-xs text-slate-500 mt-0.5">DB定義・検証・インポート・各種SQL自動構築ツール</p>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-4">
+                            <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
+                                <span className="text-xs font-semibold text-slate-600 ml-1">RDBMS:</span>
+                                <select 
+                                    value={dialect} 
+                                    onChange={(e) => setDialect(e.target.value)}
+                                    className="bg-white border border-slate-300 text-slate-800 text-xs font-medium rounded-md px-2.5 py-1 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                                >
+                                    <option value="mysql">MySQL / MariaDB</option>
+                                    <option value="postgresql">PostgreSQL</option>
+                                    <option value="sqlite">SQLite</option>
+                                    <option value="sqlserver">SQL Server</option>
+                                </select>
+                            </div>
+
+                            <div className="flex items-center space-x-1.5">
+                                <span className="text-xs font-semibold text-slate-500">サンプル:</span>
+                                <button onClick={() => loadPreset('users')} className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-medium px-2.5 py-1.5 rounded-md transition">
+                                    ユーザーマスタ
+                                </button>
+                                <button onClick={() => loadPreset('products')} className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-medium px-2.5 py-1.5 rounded-md transition">
+                                    商品マスタ
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Toast Alert */}
+                    {toast && (
+                        <div className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-xl border text-sm font-medium transition-all flex items-center space-x-2 ${
+                            toast.type === 'error' ? 'bg-red-50 text-red-800 border-red-200' : 'bg-slate-900 text-white border-slate-800'
+                        }`}>
+                            <span>{toast.type === 'error' ? '⚠️' : '✅'}</span>
+                            <span>{toast.message}</span>
+                        </div>
+                    )}
+
+                    {/* SQL Import Section */}
+                    <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden transition-all">
+                        <div 
+                            onClick={() => setIsImportExpanded(!isImportExpanded)}
+                            className="bg-slate-100 hover:bg-slate-200/80 px-5 py-3 cursor-pointer flex items-center justify-between border-b border-slate-200 transition select-none"
+                        >
+                            <div className="flex items-center space-x-2">
+                                <span className="text-xs font-bold bg-slate-700 text-white px-2 py-0.5 rounded">SQLインポート</span>
+                                <span className="text-xs font-semibold text-slate-700">SQL文（CREATE TABLE / ALTER / INSERT / UPDATE文）の読み込み</span>
+                            </div>
+                            <button className="text-xs text-indigo-600 font-bold hover:underline flex items-center space-x-1">
+                                <span>{isImportExpanded ? '▲ 折りたたむ' : '▼ SQL入力欄を展開'}</span>
+                            </button>
+                        </div>
+
+                        <div className={`p-4 space-y-3 bg-slate-50/50 ${isImportExpanded ? 'block' : 'hidden'}`}>
+                            <div className="space-y-1">
+                                <label className="text-xs font-semibold text-slate-600 block">
+                                    解析対象の SQL スクリプト (高さ可変):
+                                </label>
+                                <textarea
+                                    value={rawImportSql}
+                                    onChange={(e) => setRawImportSql(e.target.value)}
+                                    placeholder="例: INSERT INTO users (user_id, user_name) VALUES (4, '新 規太郎');&#10;ALTER TABLE users ADD status VARCHAR(20);"
+                                    className="w-full h-24 min-h-[60px] bg-white border border-slate-300 rounded-lg p-3 text-xs font-mono-code focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-y"
+                                />
+                            </div>
+
+                            {importError && (
+                                <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg font-medium flex items-center space-x-2">
+                                    <span>⚠️</span>
+                                    <span>{importError}</span>
+                                </div>
+                            )}
+
+                            <div className="flex items-center justify-between pt-1">
+                                <p className="text-[11px] text-slate-500">
+                                    ※ 未定義のカラムが含まれている場合はエラーが表示されます。
+                                </p>
+                                <button
+                                    onClick={handleImportSql}
+                                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition shadow-sm"
+                                >
+                                    📥 構文解析して反映
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* Table A: Column Definitions */}
+                    <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                        <div className="border-b border-slate-200 bg-slate-50/80 px-5 py-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                            <div className="flex items-center space-x-2">
+                                <span className="flex items-center justify-center bg-indigo-600 text-white font-bold text-xs rounded-md w-6 h-6">1</span>
+                                <h2 className="text-base font-bold text-slate-800">テーブル定義 & カラム設定 (表A)</h2>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3">
+                                <div className="flex items-center space-x-2">
+                                    <span className="text-xs font-semibold text-slate-500">論理名:</span>
+                                    <input 
+                                        type="text" 
+                                        value={tableNameLogical} 
+                                        onChange={(e) => setTableNameLogical(e.target.value)}
+                                        className="bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs text-slate-800 font-medium focus:ring-2 focus:ring-indigo-500 w-36"
+                                    />
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    <span className="text-xs font-semibold text-slate-500">物理名:</span>
+                                    <input 
+                                        type="text" 
+                                        value={tableNamePhysical} 
+                                        onChange={(e) => setTableNamePhysical(e.target.value)}
+                                        className="bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-mono-code font-bold text-indigo-700 focus:ring-2 focus:ring-indigo-500 w-36"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs">
+                                <thead className="bg-slate-100/80 border-b border-slate-200 text-slate-600 font-semibold uppercase">
+                                    <tr>
+                                        <th className="py-3 px-3">論理カラム名</th>
+                                        <th className="py-3 px-3">物理カラム名</th>
+                                        <th className="py-3 px-3 w-36">データ型</th>
+                                        <th className="py-3 px-2 w-28">桁数/精度</th>
+                                        <th className="py-3 px-2 text-center w-12">PK</th>
+                                        <th className="py-3 px-2 text-center w-16">Auto Inc</th>
+                                        <th className="py-3 px-2 text-center w-16">NOT NULL</th>
+                                        <th className="py-3 px-2 text-center w-14">Index</th>
+                                        <th className="py-3 px-3 w-28">初期値</th>
+                                        <th className="py-3 px-3">備考</th>
+                                        <th className="py-3 px-2 text-center w-12">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-200">
+                                    {columns.map((col) => {
+                                        const lengthEnabled = isLengthSupported(col.dataType);
+                                        return (
+                                            <tr key={col.id} className="hover:bg-slate-50/80">
+                                                <td className="py-2 px-2">
+                                                    <input type="text" value={col.logicalName} onChange={(e) => updateColumn(col.id, 'logicalName', e.target.value)} className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs" />
+                                                </td>
+                                                <td className="py-2 px-2">
+                                                    <input type="text" value={col.physicalName} onChange={(e) => updateColumn(col.id, 'physicalName', e.target.value)} className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono-code font-bold text-slate-900" />
+                                                </td>
+                                                <td className="py-2 px-2">
+                                                    <select value={col.dataType || 'VARCHAR'} onChange={(e) => updateColumn(col.id, 'dataType', e.target.value)} className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono-code text-indigo-700 font-semibold">
+                                                        {BASE_DATA_TYPES.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+                                                    </select>
+                                                </td>
+                                                <td className="py-2 px-2">
+                                                    <input type="text" value={col.lengthPrecision || ''} disabled={!lengthEnabled} onChange={(e) => updateColumn(col.id, 'lengthPrecision', e.target.value)} className={`w-full border rounded px-2 py-1 text-xs font-mono-code ${lengthEnabled ? 'bg-white border-slate-300' : 'bg-slate-100 border-slate-200 text-slate-400'}`} />
+                                                </td>
+                                                <td className="py-2 px-2 text-center"><input type="checkbox" checked={col.isPk} onChange={(e) => updateColumn(col.id, 'isPk', e.target.checked)} className="rounded border-slate-300 text-indigo-600" /></td>
+                                                <td className="py-2 px-2 text-center"><input type="checkbox" checked={col.isAutoInc || false} onChange={(e) => updateColumn(col.id, 'isAutoInc', e.target.checked)} className="rounded border-slate-300 text-amber-600" /></td>
+                                                <td className="py-2 px-2 text-center"><input type="checkbox" checked={col.isNotNull} disabled={col.isPk || col.isAutoInc} onChange={(e) => updateColumn(col.id, 'isNotNull', e.target.checked)} className="rounded border-slate-300 text-indigo-600" /></td>
+                                                <td className="py-2 px-2 text-center"><input type="checkbox" checked={col.isIndex} onChange={(e) => updateColumn(col.id, 'isIndex', e.target.checked)} className="rounded border-slate-300 text-indigo-600" /></td>
+                                                <td className="py-2 px-2"><input type="text" value={col.defaultValue || ''} onChange={(e) => updateColumn(col.id, 'defaultValue', e.target.value)} className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono-code" /></td>
+                                                <td className="py-2 px-2"><input type="text" value={col.comment || ''} onChange={(e) => updateColumn(col.id, 'comment', e.target.value)} className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs" /></td>
+                                                <td className="py-2 px-2 text-center"><button onClick={() => removeColumn(col.id)} className="text-slate-400 hover:text-red-600">✕</button></td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="p-3 bg-slate-50 border-t border-slate-200">
+                            <button onClick={addColumn} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">＋ カラムを追加</button>
+                        </div>
+                    </section>
+
+                    {/* Table B: Sample Data & Real-time Validation */}
+                    <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                        <div className="border-b border-slate-200 bg-slate-50/80 px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-center space-x-2">
+                                <span className="flex items-center justify-center bg-emerald-600 text-white font-bold text-xs rounded-md w-6 h-6">2</span>
+                                <h2 className="text-base font-bold text-slate-800">サンプルデータ入力 & リアルタイム検証 (表B)</h2>
+                            </div>
+                            <div className="flex items-center space-x-3">
+                                <button onClick={generateMockData} className="bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">🎲 モックデータ一括生成</button>
+                                {validationResult.count > 0 ? (
+                                    <span className="bg-red-50 border border-red-300 text-red-800 text-xs px-3 py-1 rounded-full font-semibold animate-pulse">⚠️ エラー {validationResult.count} 件</span>
+                                ) : (
+                                    <span className="bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs px-3 py-1 rounded-full font-semibold">✓ バリデーション正常</span>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs">
+                                <thead className="bg-slate-100/80 border-b border-slate-200 text-slate-700 font-semibold uppercase">
+                                    <tr>
+                                        <th className="py-3 px-3 w-10 text-center">#</th>
+                                        {columns.map(col => (
+                                            <th key={col.id} className="py-3 px-3 min-w-[140px]">
+                                                <div className="font-mono-code font-bold text-slate-900">{col.physicalName || '(未名)'}</div>
+                                                <div className="text-[10px] text-indigo-600 font-mono-code font-semibold">{getFormattedDataType(col)}</div>
+                                            </th>
+                                        ))}
+                                        <th className="py-3 px-2 text-center w-12">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-200">
+                                    {rows.map((row, rowIdx) => (
+                                        <tr key={row._rowId} className="hover:bg-slate-50/80">
+                                            <td className="py-2.5 px-2 text-center text-slate-400 font-mono-code">{rowIdx + 1}</td>
+                                            {columns.map(col => {
+                                                const errorKey = `${row._rowId}_${col.physicalName}`;
+                                                const errorMsg = validationResult.errorsMap[errorKey];
+                                                return (
+                                                    <td key={col.id} className="py-2 px-2 relative group">
+                                                        <input 
+                                                            type="text" 
+                                                            value={row[col.physicalName] !== undefined ? row[col.physicalName] : ''}
+                                                            onChange={(e) => updateCell(row._rowId, col.physicalName, e.target.value)}
+                                                            className={`w-full px-2.5 py-1 rounded text-xs font-mono-code ${
+                                                                errorMsg ? 'bg-red-50 border-2 border-red-500 text-red-900 font-semibold' : 'bg-white border border-slate-300'
+                                                            }`}
+                                                        />
+                                                        {errorMsg && (
+                                                            <div className="absolute z-30 hidden group-hover:block left-2 bottom-full mb-1 bg-red-600 text-white text-[11px] py-1 px-2.5 rounded shadow-lg whitespace-nowrap">
+                                                                ⚠️ {errorMsg}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                );
+                                            })}
+                                            <td className="py-2 px-2 text-center"><button onClick={() => removeRow(row._rowId)} className="text-slate-400 hover:text-red-600">✕</button></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="p-3 bg-slate-50 border-t border-slate-200">
+                            <button onClick={addRow} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">＋ データ行を追加</button>
+                        </div>
+                    </section>
+
+                    {/* Section: Table C (SELECT Query & Search Conditions) */}
+                    <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                        <div className="border-b border-slate-200 bg-slate-50/80 px-5 py-4 flex items-center justify-between">
+                            <div className="flex items-center space-x-2">
+                                <span className="flex items-center justify-center bg-sky-600 text-white font-bold text-xs rounded-md w-6 h-6">3</span>
+                                <h2 className="text-base font-bold text-slate-800">検索条件 & SELECT文ビルダー (表C)</h2>
+                            </div>
+                            <span className="text-xs text-slate-500">直感的なGUI操作で高度なSELECT文を自動構築</span>
+                        </div>
+
+                        <div className="p-5 space-y-5 text-xs">
+                            {/* 1. SELECT Column Picker & DISTINCT */}
+                            <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-200 space-y-2">
+                                <div className="font-semibold text-slate-700 flex items-center justify-between">
+                                    <span>取得対象カラム (SELECT 句):</span>
+                                    <label className="flex items-center space-x-1.5 cursor-pointer text-indigo-700 font-medium">
+                                        <input 
+                                            type="checkbox" 
+                                            checked={selectConfig.isDistinct} 
+                                            onChange={(e) => setSelectConfig(p => ({ ...p, isDistinct: e.target.checked }))}
+                                            className="rounded border-slate-300 text-indigo-600"
+                                        />
+                                        <span>DISTINCT (重複排除)</span>
+                                    </label>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 pt-1">
+                                    <button 
+                                        onClick={() => setSelectConfig(p => ({ ...p, selectedColumns: [] }))}
+                                        className={`px-2.5 py-1 rounded-md border text-xs font-mono-code transition ${
+                                            selectConfig.selectedColumns.length === 0 
+                                                ? 'bg-indigo-600 text-white border-indigo-600 font-bold' 
+                                                : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
+                                        }`}
+                                    >
+                                        * (全カラム取得)
+                                    </button>
+                                    {columns.map(col => {
+                                        if (!col.physicalName) return null;
+                                        const isSelected = selectConfig.selectedColumns.includes(col.physicalName);
+                                        return (
+                                            <button 
+                                                key={col.id}
+                                                onClick={() => toggleSelectColumn(col.physicalName)}
+                                                className={`px-2.5 py-1 rounded-md border text-xs font-mono-code transition ${
+                                                    isSelected 
+                                                        ? 'bg-indigo-600 text-white border-indigo-600 font-bold' 
+                                                        : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                                                }`}
+                                            >
+                                                {col.physicalName}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* 2. WHERE Search Conditions */}
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <span className="font-semibold text-slate-700">絞り込み条件 (WHERE 句):</span>
+                                    <button onClick={addWhereCondition} className="text-xs bg-sky-600 hover:bg-sky-700 text-white px-2.5 py-1 rounded-lg font-medium transition">
+                                        ＋ 検索条件を追加
+                                    </button>
+                                </div>
+
+                                {selectConfig.whereConditions.length === 0 ? (
+                                    <div className="text-slate-400 text-center py-3 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                                        検索条件なし（全件取得）
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {selectConfig.whereConditions.map((cond, idx) => (
+                                            <div key={cond.id} className="flex flex-wrap items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200">
+                                                {idx > 0 ? (
+                                                    <select 
+                                                        value={cond.combine} 
+                                                        onChange={(e) => updateWhereCondition(cond.id, 'combine', e.target.value)}
+                                                        className="bg-white border border-slate-300 font-bold text-slate-700 rounded px-2 py-1 text-xs"
+                                                    >
+                                                        <option value="AND">AND</option>
+                                                        <option value="OR">OR</option>
+                                                    </select>
+                                                ) : (
+                                                    <span className="text-xs font-bold text-slate-400 w-12 text-center">WHERE</span>
+                                                )}
+
+                                                <select 
+                                                    value={cond.column} 
+                                                    onChange={(e) => updateWhereCondition(cond.id, 'column', e.target.value)}
+                                                    className="bg-white border border-slate-300 font-mono-code font-bold text-indigo-700 rounded px-2 py-1 text-xs"
+                                                >
+                                                    {columns.map(c => (
+                                                        <option key={c.id} value={c.physicalName}>{c.physicalName} ({c.logicalName || '無題'})</option>
+                                                    ))}
+                                                </select>
+
+                                                <select 
+                                                    value={cond.operator} 
+                                                    onChange={(e) => updateWhereCondition(cond.id, 'operator', e.target.value)}
+                                                    className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-medium text-slate-700"
+                                                >
+                                                    {OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+                                                </select>
+
+                                                {!['IS NULL', 'IS NOT NULL'].includes(cond.operator) && (
+                                                    <input 
+                                                        type="text" 
+                                                        value={cond.value} 
+                                                        onChange={(e) => updateWhereCondition(cond.id, 'value', e.target.value)}
+                                                        placeholder="検索値を入力..."
+                                                        className="flex-1 bg-white border border-slate-300 rounded px-2.5 py-1 text-xs font-mono-code focus:ring-1 focus:ring-sky-500"
+                                                    />
+                                                )}
+
+                                                <button onClick={() => removeWhereCondition(cond.id)} className="text-slate-400 hover:text-red-600 px-1">
+                                                    ✕
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 3. ORDER BY & LIMIT Controls */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                                {/* ORDER BY */}
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="font-semibold text-slate-700">ソート順 (ORDER BY 句):</span>
+                                        <button onClick={addOrderByRule} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1 rounded-md font-medium">
+                                            ＋ ソートキー追加
+                                        </button>
+                                    </div>
+                                    {selectConfig.orderByRules.length === 0 ? (
+                                        <div className="text-slate-400 text-center py-2 bg-slate-50 rounded border border-dashed border-slate-200">指定なし</div>
+                                    ) : (
+                                        selectConfig.orderByRules.map(rule => (
+                                            <div key={rule.id} className="flex items-center gap-2 bg-slate-50 p-2 rounded border border-slate-200">
+                                                <select 
+                                                    value={rule.column} 
+                                                    onChange={(e) => updateOrderByRule(rule.id, 'column', e.target.value)}
+                                                    className="bg-white border border-slate-300 font-mono-code text-indigo-700 rounded px-2 py-1 flex-1"
+                                                >
+                                                    {columns.map(c => <option key={c.id} value={c.physicalName}>{c.physicalName}</option>)}
+                                                </select>
+                                                <select 
+                                                    value={rule.direction} 
+                                                    onChange={(e) => updateOrderByRule(rule.id, 'direction', e.target.value)}
+                                                    className="bg-white border border-slate-300 rounded px-2 py-1 font-semibold text-slate-700"
+                                                >
+                                                    <option value="ASC">ASC (昇順)</option>
+                                                    <option value="DESC">DESC (降順)</option>
+                                                </select>
+                                                <button onClick={() => removeOrderByRule(rule.id)} className="text-slate-400 hover:text-red-600">✕</button>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+
+                                {/* LIMIT / OFFSET */}
+                                <div className="space-y-2">
+                                    <span className="font-semibold text-slate-700">表示件数制限 (LIMIT / OFFSET):</span>
+                                    <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-[11px] text-slate-500 font-medium block mb-1">取得件数 (LIMIT / TOP):</label>
+                                            <input 
+                                                type="number" 
+                                                value={selectConfig.limit} 
+                                                onChange={(e) => setSelectConfig(p => ({ ...p, limit: e.target.value }))}
+                                                placeholder="例: 50"
+                                                className="w-full bg-white border border-slate-300 rounded px-2 py-1 font-mono-code"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[11px] text-slate-500 font-medium block mb-1">スキップ件数 (OFFSET):</label>
+                                            <input 
+                                                type="number" 
+                                                value={selectConfig.offset} 
+                                                onChange={(e) => setSelectConfig(p => ({ ...p, offset: e.target.value }))}
+                                                placeholder="例: 0"
+                                                className="w-full bg-white border border-slate-300 rounded px-2 py-1 font-mono-code"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* Output Section: Generated SQL Display */}
+                    <section className="bg-slate-900 text-slate-100 rounded-xl shadow-xl overflow-hidden border border-slate-800">
+                        <div className="border-b border-slate-800 bg-slate-950 px-5 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                            <div className="flex items-center space-x-2">
+                                <span className="flex items-center justify-center bg-indigo-500 text-white font-bold text-xs rounded-md w-6 h-6">4</span>
+                                <h2 className="text-base font-bold text-white tracking-wide">生成された SQL スクリプト</h2>
+                            </div>
+
+                            {/* SQL Tabs */}
+                            <div className="flex items-center bg-slate-900 border border-slate-800 p-1 rounded-lg overflow-x-auto">
+                                {[
+                                    { id: 'all', label: 'すべて出力' },
+                                    { id: 'create', label: 'CREATE TABLE' },
+                                    { id: 'index', label: 'CREATE INDEX' },
+                                    { id: 'insert', label: 'INSERT文' },
+                                    { id: 'update', label: 'UPDATE文' },
+                                    { id: 'select', label: 'SELECT文 (表C)' }
+                                ].map(tab => (
+                                    <button 
+                                        key={tab.id}
+                                        onClick={() => setActiveTab(tab.id)} 
+                                        className={`px-3 py-1 text-xs rounded-md font-semibold transition whitespace-nowrap ${activeTab === tab.id ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                                    >
+                                        {tab.label}
+                                    </button>
+                                ))}
+                            </div>
+
+                            <div className="flex items-center space-x-2">
+                                <button onClick={handleCopy} className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold px-3 py-1.5 rounded-lg transition">
+                                    📋 コピー
+                                </button>
+                                <button onClick={handleDownload} className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition shadow">
+                                    💾 .sql 保存
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="relative">
+                            <textarea 
+                                readOnly 
+                                value={generatedSQL} 
+                                className="w-full h-80 bg-slate-950 text-emerald-400 font-mono-code text-xs p-5 focus:outline-none resize-y leading-relaxed"
+                            />
+                        </div>
+                    </section>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
